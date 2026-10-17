@@ -42,9 +42,12 @@ HELP = """📖 명령어 안내
 /cat : 카테고리·별칭 목록
 /cat add <카테고리명> <별칭1,별칭2,...> : 카테고리 추가
 /alias <카테고리|별칭> <별칭> : 별칭 추가
+/person <카테고리|별칭> <이름1,이름2,...> : 담당자 이름 등록
 /help : 도움말
 
-※ 여러 줄로 명령어를 보내면 순서대로 모두 처리합니다."""
+※ 여러 줄로 명령어를 보내면 순서대로 모두 처리합니다.
+※ /add 첫 단어가 카테고리가 아니어도, 내용에 등록된 담당자 이름이 있으면 그 회사로 저장합니다.
+   예) /add 나씨야 견적 회신 확인 → [Z+F]"""
 
 
 # ---------- 포맷 ----------
@@ -82,8 +85,19 @@ def cmd_add(args: str) -> str:
             return "내용이 없습니다. 사용법: /add <카테고리|별칭> <내용>"
         tid = db.add_task(cat[0], parts[1])
         return f"➕ #{tid} [{cat[1]}] {parts[1]}"
-    # 일치하는 카테고리 없음 → 첫 단어 포함 전체를 '기타'에 저장
+    # 카테고리 없음 → 내용 속 담당자 이름으로 회사 판별 (내용은 첫 단어 포함 전체 저장)
+    matches = db.find_by_contact(args)
+    companies = {m[1] for m in matches}
+    if len(companies) == 1:
+        cid, cname, person = matches[0]
+        tid = db.add_task(cid, args)
+        return f"➕ #{tid} [{cname}] {args}\n👤 담당자 '{person}' → {cname}"
     etc = db.find_category(DEFAULT_CATEGORY)
+    if len(companies) > 1:
+        tid = db.add_task(etc[0], args)
+        return (f"➕ #{tid} [{etc[1]}] {args}\n"
+                f"⚠️ 여러 회사 담당자가 포함되어 있습니다({', '.join(sorted(companies))}). "
+                f"/move {tid} <카테고리> 로 지정해 주세요.")
     tid = db.add_task(etc[0], args)
     return (f"➕ #{tid} [{etc[1]}] {args}\n"
             f"⚠️ '{parts[0]}' 카테고리를 찾지 못해 '{DEFAULT_CATEGORY}'에 저장했습니다.\n"
@@ -150,8 +164,10 @@ def cmd_move(args: str) -> str:
 def cmd_cat(args: str) -> str:
     if not args:
         lines = ["🗂 카테고리 · 별칭"]
-        for _, name, aliases in db.categories():
+        for _, name, aliases, people in db.categories():
             lines.append(f"• {name}: {', '.join(aliases)}")
+            if people:
+                lines.append(f"   👤 {', '.join(people)}")
         return "\n".join(lines)
     sub, _, rest = args.partition(" ")
     if sub.lower() != "add":
@@ -186,9 +202,25 @@ def cmd_alias(args: str) -> str:
     return msg.strip()
 
 
+def cmd_person(args: str) -> str:
+    cat_text, _, names_text = args.partition(" ")
+    names = [n.strip() for n in names_text.split(",") if n.strip()]
+    if not cat_text or not names:
+        return "사용법: /person <카테고리|별칭> <이름1,이름2,...>"
+    cat = db.find_category(cat_text)
+    if not cat:
+        return f"❓ '{cat_text}' 카테고리를 찾을 수 없습니다. (/cat 으로 확인)"
+    ok = [n for n in names if db.add_contact(cat[0], n)]
+    bad = [n for n in names if n not in ok]
+    msg = f"👤 [{cat[1]}] 담당자 등록: {', '.join(ok)}" if ok else ""
+    if bad:
+        msg += f"\n⚠️ 다른 회사 담당자로 이미 등록됨: {', '.join(bad)}"
+    return msg.strip()
+
+
 COMMANDS = {
     "add": cmd_add, "done": cmd_done, "list": cmd_list, "edit": cmd_edit, "move": cmd_move,
-    "cat": cmd_cat, "alias": cmd_alias, "help": lambda _: HELP, "start": lambda _: HELP,
+    "cat": cmd_cat, "alias": cmd_alias, "person": cmd_person, "help": lambda _: HELP, "start": lambda _: HELP,
 }
 
 

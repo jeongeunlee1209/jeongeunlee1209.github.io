@@ -223,5 +223,32 @@ def test_data_persists_after_restart(fresh_db):
     bot.run_line("/done 1")
     restarted = DB(f"sqlite:///{fresh_db}")  # 재시작 시뮬레이션
     assert restarted.find_category("라이카")[1] == "Leica"
+    assert restarted.find_by_contact("나씨야")[0][1] == "Z+F"
     assert len(restarted.open_tasks()) == 13  # 시드 재삽입 없음 (13 - 1 + 1)
     assert restarted.get_task(1)[5] is not None
+
+
+# ---------- 담당자 이름 ----------
+@pytest.mark.parametrize("text", ["/add 나씨야 견적 회신 확인", "/add Naciye quote follow-up",
+                                  "/add 견적 관련 마티아스에게 메일", "/add MATHIAS 데모 일정"])
+def test_contact_name_routes_to_company(text):
+    r = bot.run_line(text)
+    assert "[Z+F]" in r and "담당자" in r
+    assert bot.db.get_task(14)[3] == text.removeprefix("/add ")
+
+
+def test_category_first_word_wins_over_contact():
+    assert "[Waites]" in bot.run_line("/add 웨이츠 마티아스 소개 메일")
+
+
+def test_person_command_and_conflict():
+    assert "등록" in bot.run_line("/person 앰버그 Felix,펠릭스")
+    assert "[Amberg Technologies]" in bot.run_line("/add 펠릭스 화상회의 링크 전달")
+    assert "이미 등록됨" in bot.run_line("/person 웨이츠 마티아스")
+    assert "👤" in bot.run_line("/cat")
+
+
+def test_contacts_from_two_companies_go_to_etc():
+    bot.run_line("/person 앰버그 펠릭스")
+    r = bot.run_line("/add 펠릭스 마티아스 공동 미팅")
+    assert "[기타]" in r and "여러 회사" in r

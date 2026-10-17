@@ -17,6 +17,10 @@ SEED_CATEGORIES = [
     (DEFAULT_CATEGORY, ["기타", "etc"]),
 ]
 
+SEED_CONTACTS = [
+    ("Z+F", ["Naciye", "나씨야", "Mathias", "마티아스"]),
+]
+
 SEED_TASKS = [
     ("Mosaic", "데모 장비 운송장 번호 확인"),
     ("Mosaic", "웨이즈원 추가 카메라 2대 답변 확인"),
@@ -83,6 +87,8 @@ class DB:
                "category_id INTEGER NOT NULL REFERENCES categories(id), "
                "content TEXT NOT NULL, created_at TEXT NOT NULL, done_at TEXT)")
         self.q("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        self.q("CREATE TABLE IF NOT EXISTS contacts (name TEXT PRIMARY KEY, display TEXT NOT NULL, "
+               "category_id INTEGER NOT NULL REFERENCES categories(id))")
         if not self.q("SELECT 1 FROM meta WHERE key = 'seeded'"):
             for name, aliases in SEED_CATEGORIES:
                 if not self.find_category(name):
@@ -90,6 +96,11 @@ class DB:
             for cat, content in SEED_TASKS:
                 self.add_task(self.find_category(cat)[0], content)
             self.q("INSERT INTO meta (key, value) VALUES ('seeded', ?)", (now().isoformat(),))
+        if not self.q("SELECT 1 FROM meta WHERE key = 'seeded_contacts'"):  # 기존 DB에도 1회 적용
+            for cat, names in SEED_CONTACTS:
+                for n in names:
+                    self.add_contact(self.find_category(cat)[0], n)
+            self.q("INSERT INTO meta (key, value) VALUES ('seeded_contacts', ?)", (now().isoformat(),))
 
     # ---------- 카테고리 ----------
     def find_category(self, text: str):
@@ -116,10 +127,29 @@ class DB:
         return True
 
     def categories(self):
-        """[(id, name, [alias, ...]), ...]"""
+        """[(id, name, [alias, ...], [담당자, ...]), ...]"""
         cats = self.q("SELECT id, name FROM categories ORDER BY id")
         aliases = self.q("SELECT category_id, alias FROM aliases ORDER BY alias")
-        return [(cid, name, [a for c, a in aliases if c == cid]) for cid, name in cats]
+        contacts = self.q("SELECT category_id, display FROM contacts ORDER BY display")
+        return [(cid, name, [a for c, a in aliases if c == cid], [d for c, d in contacts if c == cid])
+                for cid, name in cats]
+
+    # ---------- 담당자(사람 이름) ----------
+    def add_contact(self, cid: int, name: str) -> bool:
+        """담당자 이름 등록. 다른 카테고리에 이미 있으면 False."""
+        key = norm(name)
+        owner = self.q("SELECT category_id FROM contacts WHERE name = ?", (key,))
+        if owner:
+            return owner[0][0] == cid
+        self.q("INSERT INTO contacts (name, display, category_id) VALUES (?, ?, ?)", (key, name.strip(), cid))
+        return True
+
+    def find_by_contact(self, text: str):
+        """내용에 포함된 담당자 이름 검색 → [(category_id, category_name, display), ...] (긴 이름 우선)."""
+        key = norm(text)
+        rows = self.q("SELECT t.name, c.id, c.name, t.display FROM contacts t "
+                      "JOIN categories c ON c.id = t.category_id")
+        return [(cid, cname, disp) for n, cid, cname, disp in sorted(rows, key=lambda r: -len(r[0])) if n in key]
 
     # ---------- 할 일 ----------
     _SELECT = ("SELECT t.id, c.id, c.name, t.content, t.created_at, t.done_at "

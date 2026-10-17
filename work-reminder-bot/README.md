@@ -52,10 +52,12 @@ python bot.py
 /move <번호> <카테고리|별칭>
 /cat  |  /cat add <이름> <별칭1,별칭2>   예) /cat add Leica 라이카,leica
 /alias <카테고리|별칭> <별칭>       예) /alias zf 지앤에프
+/person <카테고리|별칭> <이름1,이름2>  예) /person 앰버그 Felix,펠릭스
 /help
 ```
 - 별칭은 대소문자·띄어쓰기를 무시합니다 (`Z + F` = `zf`).
 - 카테고리를 못 찾으면 입력 전체를 `기타`에 저장하고 새 카테고리 생성 방법을 안내합니다.
+- 첫 단어가 카테고리가 아니면 내용 속 **담당자 이름**으로 회사를 판별합니다 (예: `/add 나씨야 견적 회신` → Z+F). 초기 등록: Z+F — Naciye, 나씨야, Mathias, 마티아스
 - 여러 줄로 보내면 줄 단위로 모두 처리 후 결과를 한 번에 응답합니다.
 - 허용된 chat_id 외의 메시지는 응답 없이 무시합니다.
 
@@ -98,4 +100,4 @@ docker run -d --name todo-bot --env-file .env -v $(pwd)/data:/app/data --restart
 pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest -q tests
 ```
-텔레그램 서버 없이 명령어·알림·보안·데이터 유지를 검증합니다 (30개).
+텔레그램 서버 없이 명령어·알림·보안·데이터 유지를 검증합니다 (37개).
