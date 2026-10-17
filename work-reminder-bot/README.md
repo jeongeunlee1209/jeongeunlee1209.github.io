@@ -92,3 +92,10 @@ docker run -d --name todo-bot --env-file .env -v $(pwd)/data:/app/data --restart
 - 영구 디스크가 없는 호스팅 → 무료 PostgreSQL의 `DATABASE_URL` 사용
 - 호스팅이 웹 포트 응답을 요구하면 `PORT` 환경변수 설정 → `/` 경로에 `ok` 응답
 - 봇은 polling 방식이므로 **같은 토큰으로 동시에 2곳에서 실행하면 충돌**합니다. 배포 전 로컬 실행을 종료하세요.
+
+## 9. 자동 테스트
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q tests
+```
+텔레그램 서버 없이 명령어·알림·보안·데이터 유지를 검증합니다 (30개).

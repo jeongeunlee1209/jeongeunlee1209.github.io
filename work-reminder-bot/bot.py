@@ -28,6 +28,8 @@ def _parse_time(s: str) -> time:
 MORNING_TIME = _parse_time(os.getenv("MORNING_TIME", "09:00"))
 EVENING_TIME = _parse_time(os.getenv("EVENING_TIME", "17:00"))
 ALERT_DAYS = tuple(int(d) for d in os.getenv("ALERT_DAYS", "0,1,2,3,4").split(","))  # 0=월 ... 6=일
+# PTB v20+ run_daily의 days는 0=일요일 기준이므로 변환
+PTB_DAYS = tuple((d + 1) % 7 for d in ALERT_DAYS)
 WEEKDAY_KO = "월화수목금토일"
 
 HELP = """📖 명령어 안내
@@ -275,8 +277,8 @@ def main():
     # 허용된 chat_id의 새 텍스트 메시지만 처리 (그 외는 무시)
     app.add_handler(MessageHandler(
         filters.Chat(chat_id=CHAT_ID) & filters.UpdateType.MESSAGE & filters.TEXT, on_message))
-    app.job_queue.run_daily(morning_job, MORNING_TIME, days=ALERT_DAYS, name="morning")
-    app.job_queue.run_daily(evening_job, EVENING_TIME, days=ALERT_DAYS, name="evening")
+    app.job_queue.run_daily(morning_job, MORNING_TIME, days=PTB_DAYS, name="morning")
+    app.job_queue.run_daily(evening_job, EVENING_TIME, days=PTB_DAYS, name="evening")
     log.info("bot started: morning=%s evening=%s days=%s", MORNING_TIME, EVENING_TIME, ALERT_DAYS)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
