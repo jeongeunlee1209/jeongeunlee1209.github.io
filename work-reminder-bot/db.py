@@ -19,6 +19,8 @@ SEED_CATEGORIES = [
 
 SEED_CONTACTS = [
     ("Z+F", ["Naciye", "나씨야", "Mathias", "마티아스"]),
+    ("Waites", ["Peter", "피터"]),
+    ("Mosaic", ["Sabina", "Lynn", "Dylan"]),
 ]
 
 SEED_TASKS = [
@@ -96,11 +98,9 @@ class DB:
             for cat, content in SEED_TASKS:
                 self.add_task(self.find_category(cat)[0], content)
             self.q("INSERT INTO meta (key, value) VALUES ('seeded', ?)", (now().isoformat(),))
-        if not self.q("SELECT 1 FROM meta WHERE key = 'seeded_contacts'"):  # 기존 DB에도 1회 적용
-            for cat, names in SEED_CONTACTS:
-                for n in names:
-                    self.add_contact(self.find_category(cat)[0], n)
-            self.q("INSERT INTO meta (key, value) VALUES ('seeded_contacts', ?)", (now().isoformat(),))
+        for cat, names in SEED_CONTACTS:  # 매 시작 시 적용 (이미 있으면 건너뜀) → 목록 추가 시 기존 DB에도 반영
+            for n in names:
+                self.add_contact(self.find_category(cat)[0], n)
 
     # ---------- 카테고리 ----------
     def find_category(self, text: str):

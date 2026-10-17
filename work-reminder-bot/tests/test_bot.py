@@ -252,3 +252,12 @@ def test_contacts_from_two_companies_go_to_etc():
     bot.run_line("/person 앰버그 펠릭스")
     r = bot.run_line("/add 펠릭스 마티아스 공동 미팅")
     assert "[기타]" in r and "여러 회사" in r
+
+
+@pytest.mark.parametrize("text,company", [
+    ("/add 피터에게 브라켓 발송 알림", "Waites"), ("/add Peter monthly call", "Waites"),
+    ("/add Sabina 판매 예측 송부", "Mosaic"), ("/add lynn 여신 한도 회신", "Mosaic"),
+    ("/add Dylan 운송장 확인", "Mosaic"),
+])
+def test_seed_contacts_waites_mosaic(text, company):
+    assert f"[{company}]" in bot.run_line(text)
