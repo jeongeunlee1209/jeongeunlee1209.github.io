@@ -88,6 +88,10 @@ class DB:
         self.q(f"CREATE TABLE IF NOT EXISTS tasks (id {pk}, "
                "category_id INTEGER NOT NULL REFERENCES categories(id), "
                "content TEXT NOT NULL, created_at TEXT NOT NULL, done_at TEXT)")
+        try:  # 기존 DB 마이그레이션: 우선순위 컬럼
+            self.q("ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # 이미 있음
         self.q("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
         self.q("CREATE TABLE IF NOT EXISTS contacts (name TEXT PRIMARY KEY, display TEXT NOT NULL, "
                "category_id INTEGER NOT NULL REFERENCES categories(id))")
@@ -152,12 +156,19 @@ class DB:
         return [(cid, cname, disp) for n, cid, cname, disp in sorted(rows, key=lambda r: -len(r[0])) if n in key]
 
     # ---------- 할 일 ----------
-    _SELECT = ("SELECT t.id, c.id, c.name, t.content, t.created_at, t.done_at "
+    _SELECT = ("SELECT t.id, c.id, c.name, t.content, t.created_at, t.done_at, t.priority "
                "FROM tasks t JOIN categories c ON c.id = t.category_id ")
 
-    def add_task(self, cid: int, content: str) -> int:
-        return self.q("INSERT INTO tasks (category_id, content, created_at) VALUES (?, ?, ?) RETURNING id",
-                      (cid, content, now().isoformat()))[0][0]
+    def add_task(self, cid: int, content: str, priority: int = 0) -> int:
+        return self.q("INSERT INTO tasks (category_id, content, created_at, priority) VALUES (?, ?, ?, ?) "
+                      "RETURNING id", (cid, content, now().isoformat(), priority))[0][0]
+
+    def set_priority(self, tid: int, priority: int):
+        self.q("UPDATE tasks SET priority = ? WHERE id = ?", (priority, tid))
+
+    def count_created_between(self, start: datetime, end: datetime) -> int:
+        return self.q("SELECT COUNT(*) FROM tasks WHERE created_at >= ? AND created_at <= ?",
+                      (start.isoformat(), end.isoformat()))[0][0]
 
     def get_task(self, tid: int):
         rows = self.q(self._SELECT + "WHERE t.id = ?", (tid,))
@@ -174,8 +185,9 @@ class DB:
 
     def open_tasks(self, cid: int | None = None):
         if cid is None:
-            return self.q(self._SELECT + "WHERE t.done_at IS NULL ORDER BY c.id, t.id")
-        return self.q(self._SELECT + "WHERE t.done_at IS NULL AND c.id = ? ORDER BY t.id", (cid,))
+            return self.q(self._SELECT + "WHERE t.done_at IS NULL ORDER BY c.id, t.priority DESC, t.id")
+        return self.q(self._SELECT + "WHERE t.done_at IS NULL AND c.id = ? ORDER BY t.priority DESC, t.id",
+                      (cid,))
 
     def done_between(self, start: datetime, end: datetime):
         return self.q(self._SELECT + "WHERE t.done_at >= ? AND t.done_at <= ? ORDER BY c.id, t.id",

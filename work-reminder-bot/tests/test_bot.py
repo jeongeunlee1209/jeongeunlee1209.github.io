@@ -1,5 +1,5 @@
 """완료 기준 기반 테스트: 텔레그램 서버 없이 명령어·알림·보안·영속성 검증."""
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -261,3 +261,102 @@ def test_contacts_from_two_companies_go_to_etc():
 ])
 def test_seed_contacts_waites_mosaic(text, company):
     assert f"[{company}]" in bot.run_line(text)
+
+
+# ---------- 우선순위 ----------
+def test_priority_add_and_top_section():
+    r = bot.run_line("/add zf !견적 회신 급함")
+    assert "❗#14 [Z+F] 견적 회신 급함" in r
+    assert bot.db.get_task(14)[3] == "견적 회신 급함"
+    out = bot.run_line("/list")
+    top, rest = out.split("📁", 1)
+    assert "🔥 우선 처리" in top and "❗[Z+F] #14 견적 회신 급함" in top
+    assert "#14" not in rest  # 중복 표시 없음
+
+
+def test_priority_via_contact_and_list_category_sort():
+    assert "❗#14 [Z+F]" in bot.run_line("/add !나씨야 회신 독촉")
+    lines = bot.run_line("/list zf").splitlines()
+    assert "❗#14" in lines[1]  # 카테고리 내에서 우선 항목이 맨 위
+
+
+def test_pri_toggle():
+    assert "❗ 우선 지정: #1" in bot.run_line("/pri 1")
+    assert bot.db.get_task(1)[6] == 1
+    assert "⚪ 우선 해제: #1" in bot.run_line("/pri 1")
+    assert bot.db.get_task(1)[6] == 0
+    assert "#999 없음" in bot.run_line("/pri 999")
+
+
+def test_add_only_exclamation_is_error():
+    assert "내용이 없습니다" in bot.run_line("/add zf !")
+
+
+@pytest.mark.asyncio
+async def test_morning_shows_priority_on_top():
+    bot.run_line("/pri 13")
+    ctx = fake_ctx()
+    await bot.morning_job(ctx)
+    out = sent_text(ctx)
+    assert out.index("🔥 우선 처리") < out.index("📁")
+
+
+def test_migration_adds_priority_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, category_id INTEGER NOT NULL, "
+              "content TEXT NOT NULL, created_at TEXT NOT NULL, done_at TEXT)")
+    c.commit(); c.close()
+    d = DB(f"sqlite:///{path}")
+    assert d.open_tasks()[0][6] == 0
+
+
+# ---------- 공휴일 ----------
+@pytest.mark.asyncio
+async def test_holiday_skips_alerts(monkeypatch):
+    set_now(monkeypatch, datetime(2026, 10, 9, 9, 0, tzinfo=KST))  # 한글날(금)
+    ctx = fake_ctx()
+    await bot.morning_job(ctx)
+    await bot.evening_job(ctx)
+    ctx.bot.send_message.assert_not_called()
+
+
+def test_korean_holidays_known():
+    assert bot.holiday_name(date(2026, 10, 3))   # 개천절
+    assert bot.holiday_name(date(2026, 9, 25))   # 추석
+    assert not bot.holiday_name(date(2026, 10, 15))
+
+
+# ---------- 주간 요약 ----------
+@pytest.mark.asyncio
+async def test_weekly_summary_on_friday(monkeypatch):
+    set_now(monkeypatch, datetime(2026, 10, 12, 10, 0, tzinfo=KST))  # 월
+    bot.run_line("/done 1 5")
+    bot.run_line("/add 웨이츠 신규 항목")
+    set_now(monkeypatch, datetime(2026, 10, 16, 17, 0, tzinfo=KST))  # 금
+    ctx = fake_ctx()
+    await bot.evening_job(ctx)
+    msgs = [c.args[1] for c in ctx.bot.send_message.call_args_list]
+    assert len(msgs) == 2
+    w = msgs[1]
+    assert "주간 요약 (10/12~10/16)" in w
+    assert "• Mosaic: 완료 1건 / 남음 3건" in w and "• Z+F: 완료 1건 / 남음 2건" in w
+    assert "이번 주 완료 2건 · 신규 등록 1건 · 남은 항목 12건" in w
+
+
+@pytest.mark.asyncio
+async def test_no_weekly_summary_midweek(monkeypatch):
+    set_now(monkeypatch, datetime(2026, 10, 14, 17, 0, tzinfo=KST))  # 수
+    ctx = fake_ctx()
+    await bot.evening_job(ctx)
+    assert ctx.bot.send_message.call_count == 1
+
+
+def test_weekly_on_thursday_when_friday_holiday():
+    assert bot.is_last_workday_of_week(date(2026, 10, 8))       # 목, 다음날 한글날
+    assert not bot.is_last_workday_of_week(date(2026, 10, 15))  # 평범한 목요일
+
+
+def test_week_command():
+    assert "📊 주간 요약" in bot.run_line("/week")

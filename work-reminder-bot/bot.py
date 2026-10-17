@@ -2,9 +2,10 @@
 import logging
 import os
 import threading
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import holidays
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
@@ -31,6 +32,22 @@ ALERT_DAYS = tuple(int(d) for d in os.getenv("ALERT_DAYS", "0,1,2,3,4").split(",
 # PTB v20+ run_daily의 days는 0=일요일 기준이므로 변환
 PTB_DAYS = tuple((d + 1) % 7 for d in ALERT_DAYS)
 WEEKDAY_KO = "월화수목금토일"
+SKIP_HOLIDAYS = os.getenv("SKIP_HOLIDAYS", "true").lower() == "true"
+WEEKLY_SUMMARY = os.getenv("WEEKLY_SUMMARY", "true").lower() == "true"
+KR_HOLIDAYS = holidays.country_holidays("KR")
+
+
+def holiday_name(d: date) -> str | None:
+    return KR_HOLIDAYS.get(d) if SKIP_HOLIDAYS else None
+
+
+def is_last_workday_of_week(d: date) -> bool:
+    """이번 주(~일요일)에 남은 알림일이 없으면 True → 금요일이 공휴일이면 목요일에 주간 요약."""
+    for i in range(1, 7 - d.weekday()):
+        nd = d + timedelta(days=i)
+        if nd.weekday() in ALERT_DAYS and not holiday_name(nd):
+            return False
+    return True
 
 HELP = """📖 명령어 안내
 /add <카테고리|별칭> <내용> : 할 일 추가
@@ -42,22 +59,26 @@ HELP = """📖 명령어 안내
 /cat : 카테고리·별칭 목록
 /cat add <카테고리명> <별칭1,별칭2,...> : 카테고리 추가
 /alias <카테고리|별칭> <별칭> : 별칭 추가
+/pri <번호> [번호 ...] : 우선순위 지정/해제 (토글)
+/week : 이번 주 요약
 /person <카테고리|별칭> <이름1,이름2,...> : 담당자 이름 등록
 /help : 도움말
 
 ※ 여러 줄로 명령어를 보내면 순서대로 모두 처리합니다.
+※ 내용 앞에 ! 를 붙이면 우선 항목(❗)으로 등록됩니다. 예) /add zf !견적 회신
 ※ /add 첫 단어가 카테고리가 아니어도, 내용에 등록된 담당자 이름이 있으면 그 회사로 저장합니다.
    예) /add 나씨야 견적 회신 확인 → [Z+F]"""
 
 
 # ---------- 포맷 ----------
 def fmt_task(t, with_date=True) -> str:
-    tid, _, _, content, created, _ = t
+    tid, _, _, content, created, _, pri = t
+    mark = "❗" if pri else ""
     if not with_date:
-        return f"  #{tid} {content}"
+        return f"  {mark}#{tid} {content}"
     c = datetime.fromisoformat(created)
     repeat = " 🔁" if (now().date() - c.date()).days >= 7 else ""
-    return f"  #{tid} {content} ({c.month}/{c.day} 등록){repeat}"
+    return f"  {mark}#{tid} {content} ({c.month}/{c.day} 등록){repeat}"
 
 
 def fmt_grouped(tasks, with_date=True) -> str:
@@ -68,6 +89,26 @@ def fmt_grouped(tasks, with_date=True) -> str:
             lines.append(f"\n📁 {current}")
         lines.append(fmt_task(t, with_date))
     return "\n".join(lines).lstrip("\n")
+
+
+def fmt_open(tasks) -> str:
+    """우선 항목을 맨 위에 모아 보여주고, 나머지는 카테고리별로."""
+    urgent = [t for t in tasks if t[6]]
+    rest = [t for t in tasks if not t[6]]
+    parts = []
+    if urgent:
+        parts.append("🔥 우선 처리\n" + "\n".join(
+            fmt_task(t).replace("❗", f"❗[{t[2]}] ", 1) for t in urgent))
+    if rest:
+        parts.append(fmt_grouped(rest))
+    return "\n\n".join(parts)
+
+
+def _split_priority(content: str):
+    """내용 앞의 ! → 우선 항목."""
+    if content.startswith("!"):
+        return content.lstrip("!").strip(), 1
+    return content, 0
 
 
 def _ids(text: str):
@@ -83,15 +124,19 @@ def cmd_add(args: str) -> str:
     if cat:
         if len(parts) < 2:
             return "내용이 없습니다. 사용법: /add <카테고리|별칭> <내용>"
-        tid = db.add_task(cat[0], parts[1])
-        return f"➕ #{tid} [{cat[1]}] {parts[1]}"
+        content, pri = _split_priority(parts[1])
+        if not content:
+            return "내용이 없습니다. 사용법: /add <카테고리|별칭> <내용>"
+        tid = db.add_task(cat[0], content, pri)
+        return f"➕ {'❗' if pri else ''}#{tid} [{cat[1]}] {content}"
     # 카테고리 없음 → 내용 속 담당자 이름으로 회사 판별 (내용은 첫 단어 포함 전체 저장)
     matches = db.find_by_contact(args)
     companies = {m[1] for m in matches}
     if len(companies) == 1:
         cid, cname, person = matches[0]
-        tid = db.add_task(cid, args)
-        return f"➕ #{tid} [{cname}] {args}\n👤 담당자 '{person}' → {cname}"
+        content, pri = _split_priority(args)
+        tid = db.add_task(cid, content, pri)
+        return f"➕ {'❗' if pri else ''}#{tid} [{cname}] {content}\n👤 담당자 '{person}' → {cname}"
     etc = db.find_category(DEFAULT_CATEGORY)
     if len(companies) > 1:
         tid = db.add_task(etc[0], args)
@@ -133,7 +178,7 @@ def cmd_list(args: str) -> str:
         tasks = db.open_tasks(cat[0])
         return fmt_grouped(tasks) if tasks else f"[{cat[1]}] 미완료 항목이 없습니다."
     tasks = db.open_tasks()
-    return f"📋 미완료 {len(tasks)}건\n\n{fmt_grouped(tasks)}" if tasks else "미완료 항목이 없습니다. 🎉"
+    return f"📋 미완료 {len(tasks)}건\n\n{fmt_open(tasks)}" if tasks else "미완료 항목이 없습니다. 🎉"
 
 
 def cmd_edit(args: str) -> str:
@@ -218,9 +263,45 @@ def cmd_person(args: str) -> str:
     return msg.strip()
 
 
+def cmd_pri(args: str) -> str:
+    try:
+        ids = _ids(args)
+    except ValueError:
+        return "번호는 숫자로 입력해 주세요. 예: /pri 3 5"
+    if not ids:
+        return "사용법: /pri <번호> [번호 ...]"
+    out = []
+    for tid in ids:
+        t = db.get_task(tid)
+        if not t:
+            out.append(f"❓ #{tid} 없음")
+            continue
+        db.set_priority(tid, 0 if t[6] else 1)
+        out.append(f"{'⚪ 우선 해제' if t[6] else '❗ 우선 지정'}: #{tid} {t[3]}")
+    return "\n".join(out)
+
+
+def week_summary(end: datetime) -> str:
+    start = (end - timedelta(days=end.weekday())).replace(hour=0, minute=0, second=0)
+    done = db.done_between(start, end)
+    remaining = db.open_tasks()
+    stale = sum(1 for t in remaining if (end.date() - datetime.fromisoformat(t[4]).date()).days >= 7)
+    lines = [f"📊 주간 요약 ({start.month}/{start.day}~{end.month}/{end.day})", ""]
+    for cid, name, _, _ in db.categories():
+        d = sum(1 for t in done if t[1] == cid)
+        r = sum(1 for t in remaining if t[1] == cid)
+        if d or r:
+            lines.append(f"• {name}: 완료 {d}건 / 남음 {r}건")
+    lines += ["", "━━━━━━━━━━",
+              f"이번 주 완료 {len(done)}건 · 신규 등록 {db.count_created_between(start, end)}건 · "
+              f"남은 항목 {len(remaining)}건 (🔁 7일 이상 {stale}건)"]
+    return "\n".join(lines)
+
+
 COMMANDS = {
     "add": cmd_add, "done": cmd_done, "list": cmd_list, "edit": cmd_edit, "move": cmd_move,
-    "cat": cmd_cat, "alias": cmd_alias, "person": cmd_person, "help": lambda _: HELP, "start": lambda _: HELP,
+    "cat": cmd_cat, "alias": cmd_alias, "person": cmd_person, "pri": cmd_pri,
+    "week": lambda _: week_summary(now()), "help": lambda _: HELP, "start": lambda _: HELP,
 }
 
 
@@ -270,20 +351,28 @@ def _today_label() -> str:
 
 
 async def morning_job(ctx: ContextTypes.DEFAULT_TYPE):
+    if name := holiday_name(now().date()):
+        log.info("holiday skip: %s", name)
+        return
     tasks = db.open_tasks()
-    body = fmt_grouped(tasks) if tasks else "미완료 항목이 없습니다. 🎉"
+    body = fmt_open(tasks) if tasks else "미완료 항목이 없습니다. 🎉"
     await send(ctx.bot, f"☀️ {_today_label()} 오늘의 할 일 ({len(tasks)}건)\n\n{body}")
 
 
 async def evening_job(ctx: ContextTypes.DEFAULT_TYPE):
     end = now()
+    if name := holiday_name(end.date()):
+        log.info("holiday skip: %s", name)
+        return
     done = db.done_between(end.replace(hour=0, minute=0, second=0), end)
     remaining = db.open_tasks()
     text = (f"🌙 {_today_label()} 업무 마감 정리\n\n"
             f"✅ 오늘 완료한 항목\n{fmt_grouped(done, with_date=False) if done else '  없음'}\n\n"
-            f"⏳ 미완료 항목\n{fmt_grouped(remaining) if remaining else '  없음 🎉'}\n\n"
+            f"⏳ 미완료 항목\n{fmt_open(remaining) if remaining else '  없음 🎉'}\n\n"
             f"━━━━━━━━━━\n오늘 완료 {len(done)}건 / 남은 항목 {len(remaining)}건")
     await send(ctx.bot, text)
+    if WEEKLY_SUMMARY and is_last_workday_of_week(end.date()):
+        await send(ctx.bot, week_summary(end))
 
 
 # ---------- 헬스체크 (PORT가 지정된 호스팅용) ----------
